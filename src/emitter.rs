@@ -1,4 +1,4 @@
-use crate::ast::{Accidental, Bar, BarElement, Duration, Key, Mode, Note, Pitch, TimeSignature, Tune, Tuplet};
+use crate::ast::{Accidental, Bar, BarElement, Duration, Key, Mode, Note, Pitch, Section, TimeSignature, Tune, Tuplet};
 
 pub fn emit(tune: &Tune) -> String {
     let mut out = String::new();
@@ -17,10 +17,34 @@ pub fn emit(tune: &Tune) -> String {
     out.push_str(&format!("    {}\n", emit_time(&tune.header.time)));
 
     let key_sig = KeySig::from_key(&tune.header.key);
-    for bar in &tune.bars {
-        out.push_str("    ");
-        out.push_str(&emit_bar(bar, &tune.header.default_length, &key_sig));
-        out.push_str(" |\n");
+    let dl = &tune.header.default_length;
+
+    for section in &tune.sections {
+        match section {
+            Section::Plain(bars) => {
+                for bar in bars {
+                    out.push_str(&format!("    {} |\n", emit_bar(bar, dl, &key_sig)));
+                }
+            }
+            Section::Repeat { body, alternatives } => {
+                let n_voltas = alternatives.len().max(2);
+                out.push_str(&format!("    \\repeat volta {} {{\n", n_voltas));
+                for bar in body {
+                    out.push_str(&format!("      {} |\n", emit_bar(bar, dl, &key_sig)));
+                }
+                if !alternatives.is_empty() {
+                    out.push_str("      \\alternative {\n");
+                    for alt in alternatives {
+                        let bars_str: Vec<String> = alt.iter()
+                            .map(|b| format!("{} |", emit_bar(b, dl, &key_sig)))
+                            .collect();
+                        out.push_str(&format!("        {{ {} }}\n", bars_str.join(" ")));
+                    }
+                    out.push_str("      }\n");
+                }
+                out.push_str("    }\n");
+            }
+        }
     }
 
     out.push_str("  }\n}\n");

@@ -6,19 +6,23 @@ use std::iter::Peekable;
 pub struct Lexer<'a> {
     chars: Peekable<Chars<'a>>,
     at_line_start: bool,
+    push_back: Option<Token>,
 }
 
 impl<'a> Iterator for Lexer<'a> {
     type Item = Token;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(t) = self.push_back.take() {
+            return Some(t);
+        }
         self.next_token()
     }
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
-        Self { chars: input.chars().peekable(), at_line_start: true }
+        Self { chars: input.chars().peekable(), at_line_start: true, push_back: None }
     }
 
     fn next_token(&mut self) -> Option<Token> {
@@ -61,10 +65,14 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_barline(&mut self) -> Option<Token> {
-        self.chars.next(); // consume the '|' we already peeked
+        self.chars.next(); // consume '|'
         match self.chars.peek().copied() {
             Some(':') => { self.chars.next(); Some(Token::RepeatStart) }
             Some('|') => { self.chars.next(); Some(Token::DoubleBar) }
+            Some(c) if c.is_ascii_digit() => {
+                self.chars.next();
+                Some(Token::Volta(c as u8 - b'0'))
+            }
             _ => Some(Token::Bar)
         }
     }
@@ -72,7 +80,17 @@ impl<'a> Lexer<'a> {
     fn lex_repeat_end(&mut self) -> Option<Token> {
         self.chars.next(); // consume ':'
         match self.chars.peek().copied() {
-            Some('|') => { self.chars.next(); Some(Token::RepeatEnd) }
+            Some('|') => {
+                self.chars.next();
+                // :|n — push volta token so it's returned next call
+                if let Some(c) = self.chars.peek().copied() {
+                    if c.is_ascii_digit() {
+                        self.chars.next();
+                        self.push_back = Some(Token::Volta(c as u8 - b'0'));
+                    }
+                }
+                Some(Token::RepeatEnd)
+            }
             Some(':') => { self.chars.next(); Some(Token::RepeatEndStart) }
             _ => Some(Token::Unknown)
         }

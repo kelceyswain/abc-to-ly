@@ -1,7 +1,7 @@
 use std::iter::Peekable;
 
 use crate::ast::{
-    Bar, BarElement, Duration, Header, Key, Mode, Pitch, TimeSignature, Token, Tune,
+    Bar, BarElement, Duration, Header, Key, Mode, Pitch, Section, TimeSignature, Token, Tune,
 };
 
 #[allow(dead_code)]
@@ -22,8 +22,8 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
     pub fn parse(&mut self) -> Result<Tune, ParseError> {
         let header = self.parse_header()?;
-        let bars = self.parse_body();
-        Ok(Tune { header, bars })
+        let sections = self.parse_sections();
+        Ok(Tune { header, sections })
     }
 
     fn parse_header(&mut self) -> Result<Header, ParseError> {
@@ -51,14 +51,50 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         })
     }
 
-    fn parse_body(&mut self) -> Vec<Bar> {
-        let mut bars: Vec<Bar> = Vec::new();
-        let mut current: Vec<BarElement> = Vec::new();
+    #[allow(unused_assignments)]
+    fn parse_sections(&mut self) -> Vec<Section> {
+        let mut sections: Vec<Section> = Vec::new();
+
+        // Accumulator for the bar currently being built
+        let mut cur: Vec<BarElement> = Vec::new();
+
+        // Where completed bars are deposited — depends on which phase we're in
+        let mut plain:   Vec<Bar> = Vec::new();   // before any repeat
+        let mut body:    Vec<Bar> = Vec::new();   // inside a repeat, before first volta
+        let mut alts:    Vec<Vec<Bar>> = Vec::new(); // completed volta alternatives
+        let mut cur_alt: Vec<Bar> = Vec::new();   // the volta alternative being built
+
+        let mut in_repeat = false;
+        let mut in_alt    = false;
+
+        macro_rules! flush_bar {
+            () => {
+                if !cur.is_empty() {
+                    let bar = Bar { elements: std::mem::take(&mut cur) };
+                    if in_alt        { cur_alt.push(bar); }
+                    else if in_repeat { body.push(bar); }
+                    else              { plain.push(bar); }
+                }
+            };
+        }
+
+        macro_rules! finish_repeat {
+            () => {
+                sections.push(Section::Repeat {
+                    body: std::mem::take(&mut body),
+                    alternatives: std::mem::take(&mut alts),
+                });
+                in_repeat = false;
+                in_alt    = false;
+            };
+        }
 
         loop {
             match self.tokens.next() {
                 None => break,
-                Some(Token::Note(n)) => current.push(BarElement::Note(n)),
+
+                Some(Token::Note(n)) => cur.push(BarElement::Note(n)),
+
                 Some(Token::Tuplet(t)) => {
                     let count = t.r.unwrap_or(t.p) as usize;
                     let notes = (0..count)
@@ -67,24 +103,77 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                             _ => None,
                         })
                         .collect();
-                    current.push(BarElement::Tuplet(t, notes));
+                    cur.push(BarElement::Tuplet(t, notes));
                 }
-                Some(Token::Bar | Token::DoubleBar | Token::RepeatStart
-                    | Token::RepeatEnd | Token::RepeatEndStart) => {
-                    if !current.is_empty() {
-                        bars.push(Bar { elements: current });
-                        current = Vec::new();
+
+                Some(Token::Bar) => { flush_bar!(); }
+
+                Some(Token::RepeatStart) => {
+                    flush_bar!();
+                    if !plain.is_empty() {
+                        sections.push(Section::Plain(std::mem::take(&mut plain)));
+                    }
+                    in_repeat = true;
+                }
+
+                Some(Token::Volta(_)) => {
+                    flush_bar!();
+                    in_alt = true;
+                }
+
+                Some(Token::RepeatEnd) => {
+                    flush_bar!();
+                    if in_alt {
+                        alts.push(std::mem::take(&mut cur_alt));
+                        // If a Volta token follows, another alternative is starting
+                        if matches!(self.tokens.peek(), Some(Token::Volta(_))) {
+                            // Stay in alt mode; cur_alt already empty
+                        } else {
+                            finish_repeat!();
+                        }
+                    } else {
+                        finish_repeat!();
                     }
                 }
+
+                Some(Token::DoubleBar) => {
+                    flush_bar!();
+                    if in_alt {
+                        alts.push(std::mem::take(&mut cur_alt));
+                        finish_repeat!();
+                    } else if in_repeat {
+                        finish_repeat!();
+                    } else if !plain.is_empty() {
+                        sections.push(Section::Plain(std::mem::take(&mut plain)));
+                    }
+                }
+
+                Some(Token::RepeatEndStart) => {
+                    // :|: — end a repeat and immediately start a new one
+                    flush_bar!();
+                    if in_alt {
+                        alts.push(std::mem::take(&mut cur_alt));
+                    }
+                    finish_repeat!();
+                    in_repeat = true;
+                }
+
                 Some(Token::Header(_, _) | Token::Unknown) => {}
             }
         }
 
-        if !current.is_empty() {
-            bars.push(Bar { elements: current });
+        // Flush any trailing material
+        flush_bar!();
+        if in_alt {
+            alts.push(std::mem::take(&mut cur_alt));
+            finish_repeat!();
+        } else if in_repeat && !body.is_empty() {
+            finish_repeat!();
+        } else if !plain.is_empty() {
+            sections.push(Section::Plain(std::mem::take(&mut plain)));
         }
 
-        bars
+        sections
     }
 }
 
@@ -107,13 +196,8 @@ fn parse_time_sig(s: &str) -> Option<TimeSignature> {
 fn parse_key(s: &str) -> Option<Key> {
     let mut chars = s.chars();
     let pitch = match chars.next()? {
-        'C' => Pitch::C,
-        'D' => Pitch::D,
-        'E' => Pitch::E,
-        'F' => Pitch::F,
-        'G' => Pitch::G,
-        'A' => Pitch::A,
-        'B' => Pitch::B,
+        'C' => Pitch::C, 'D' => Pitch::D, 'E' => Pitch::E, 'F' => Pitch::F,
+        'G' => Pitch::G, 'A' => Pitch::A, 'B' => Pitch::B,
         _ => return None,
     };
     let mode = match chars.as_str().to_lowercase().as_str() {
@@ -134,6 +218,13 @@ mod tests {
 
     fn parse(input: &str) -> Result<Tune, ParseError> {
         Parser::new(Lexer::new(input)).parse()
+    }
+
+    fn plain_bars(tune: &Tune) -> &Vec<Bar> {
+        match &tune.sections[0] {
+            Section::Plain(bars) => bars,
+            s => panic!("expected Section::Plain, got {s:?}"),
+        }
     }
 
     #[test]
@@ -182,22 +273,25 @@ mod tests {
     #[test]
     fn groups_notes_into_bars() {
         let tune = parse("M:4/4\nL:1/8\nK:D\nabc | def").unwrap();
-        assert_eq!(tune.bars.len(), 2);
-        assert_eq!(tune.bars[0].elements.len(), 3);
-        assert_eq!(tune.bars[1].elements.len(), 3);
+        let bars = plain_bars(&tune);
+        assert_eq!(bars.len(), 2);
+        assert_eq!(bars[0].elements.len(), 3);
+        assert_eq!(bars[1].elements.len(), 3);
     }
 
     #[test]
     fn trailing_notes_become_final_bar() {
         let tune = parse("M:4/4\nL:1/8\nK:D\nabc").unwrap();
-        assert_eq!(tune.bars.len(), 1);
-        assert_eq!(tune.bars[0].elements.len(), 3);
+        let bars = plain_bars(&tune);
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].elements.len(), 3);
     }
 
     #[test]
     fn parses_note_fields() {
         let tune = parse("M:4/4\nL:1/8\nK:D\n^c'2").unwrap();
-        let BarElement::Note(n) = &tune.bars[0].elements[0] else { panic!("expected note") };
+        let bars = plain_bars(&tune);
+        let BarElement::Note(n) = &bars[0].elements[0] else { panic!("expected note") };
         assert!(matches!(n.pitch, Pitch::C));
         assert!(matches!(n.accidental, Some(Accidental::Sharp)));
         assert_eq!(n.octave, 1);
@@ -207,7 +301,8 @@ mod tests {
     #[test]
     fn parses_tuplet() {
         let tune = parse("M:4/4\nL:1/8\nK:D\n(3cde").unwrap();
-        let BarElement::Tuplet(t, notes) = &tune.bars[0].elements[0] else { panic!("expected tuplet") };
+        let bars = plain_bars(&tune);
+        let BarElement::Tuplet(t, notes) = &bars[0].elements[0] else { panic!("expected tuplet") };
         assert_eq!(t.p, 3);
         assert_eq!(notes.len(), 3);
     }
@@ -215,8 +310,28 @@ mod tests {
     #[test]
     fn tuplet_with_explicit_r() {
         let tune = parse("M:4/4\nL:1/8\nK:D\n(3:2:3cde").unwrap();
-        let BarElement::Tuplet(t, notes) = &tune.bars[0].elements[0] else { panic!("expected tuplet") };
+        let bars = plain_bars(&tune);
+        let BarElement::Tuplet(t, notes) = &bars[0].elements[0] else { panic!("expected tuplet") };
         assert_eq!(t.r, Some(3));
         assert_eq!(notes.len(), 3);
+    }
+
+    #[test]
+    fn parses_repeat_with_alternatives() {
+        let tune = parse("M:4/4\nL:1/8\nK:D\n|:abc|def|1gab:|2gcd||").unwrap();
+        assert_eq!(tune.sections.len(), 1);
+        let Section::Repeat { body, alternatives } = &tune.sections[0] else {
+            panic!("expected Repeat section");
+        };
+        assert_eq!(body.len(), 2);       // abc, def
+        assert_eq!(alternatives.len(), 2); // gab, gcd
+    }
+
+    #[test]
+    fn parses_two_repeat_sections() {
+        let tune = parse("M:4/4\nL:1/8\nK:D\n|:abc:||\n|:def:||\n").unwrap();
+        assert_eq!(tune.sections.len(), 2);
+        assert!(matches!(tune.sections[0], Section::Repeat { .. }));
+        assert!(matches!(tune.sections[1], Section::Repeat { .. }));
     }
 }

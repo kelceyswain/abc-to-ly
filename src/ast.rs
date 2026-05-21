@@ -39,6 +39,7 @@ pub enum Token {
     Note(Note),
     Header(char, String),
     Tuplet(Tuplet),
+    Volta(u8),
     RepeatStart,
     RepeatEnd,
     RepeatEndStart,
@@ -48,9 +49,15 @@ pub enum Token {
 }
 
 #[derive(Debug)]
+pub enum Section {
+    Plain(Vec<Bar>),
+    Repeat { body: Vec<Bar>, alternatives: Vec<Vec<Bar>> },
+}
+
+#[derive(Debug)]
 pub struct Tune {
     pub header: Header,
-    pub bars: Vec<Bar>,
+    pub sections: Vec<Section>,
 }
 
 #[derive(Debug)]

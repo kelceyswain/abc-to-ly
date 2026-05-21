@@ -1,9 +1,14 @@
 use crate::ast::{Accidental, Bar, BarElement, Duration, Key, Mode, Note, Pitch, Section, TimeSignature, Tune, Tuplet};
 
-pub fn emit(tune: &Tune) -> String {
+pub fn emit(tune: &Tune, style: Option<&str>) -> String {
     let mut out = String::new();
 
     out.push_str("\\version \"2.24.0\"\n\n");
+
+    if let Some(s) = style {
+        out.push_str(s.trim_end());
+        out.push_str("\n\n");
+    }
 
     if !tune.header.title.is_empty() {
         out.push_str(&format!(
@@ -267,7 +272,7 @@ mod tests {
 
     fn emit_str(input: &str) -> String {
         let tune = Parser::new(Lexer::new(input)).parse().unwrap();
-        emit(&tune)
+        emit(&tune, None)
     }
 
     #[test]

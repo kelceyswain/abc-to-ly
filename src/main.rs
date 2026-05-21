@@ -18,6 +18,10 @@ struct Args {
     /// Output LilyPond file (default: input with .ly extension)
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// LilyPond style file to include after \\version (e.g. \\paper block, staff size)
+    #[arg(short, long)]
+    style: Option<PathBuf>,
 }
 
 fn main() {
@@ -31,10 +35,15 @@ fn main() {
         }
     };
 
+    let style = args.style.as_ref().map(|p| fs::read_to_string(p).unwrap_or_else(|e| {
+        eprintln!("error reading style {}: {e}", p.display());
+        std::process::exit(1);
+    }));
+
     let output_path = args.output.unwrap_or_else(|| args.input.with_extension("ly"));
 
     let ly = match Parser::new(Lexer::new(&input)).parse() {
-        Ok(tune) => emitter::emit(&tune),
+        Ok(tune) => emitter::emit(&tune, style.as_deref()),
         Err(e) => {
             eprintln!("parse error: {e:?}");
             std::process::exit(1);

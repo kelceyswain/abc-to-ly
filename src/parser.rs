@@ -132,6 +132,11 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                             finish_repeat!();
                         }
                     } else {
+                        // :|  without a preceding |: — treat accumulated plain bars
+                        // as the repeat body (common in ABC tunes from thesession etc.)
+                        if !plain.is_empty() {
+                            body = std::mem::take(&mut plain);
+                        }
                         finish_repeat!();
                     }
                 }
@@ -333,5 +338,17 @@ mod tests {
         assert_eq!(tune.sections.len(), 2);
         assert!(matches!(tune.sections[0], Section::Repeat { .. }));
         assert!(matches!(tune.sections[1], Section::Repeat { .. }));
+    }
+
+    #[test]
+    fn repeat_end_without_start_uses_plain_bars_as_body() {
+        // Second section has no |: — bars before :| should become the repeat body
+        let tune = parse("M:4/4\nL:1/8\nK:D\n|:abc:|def:|").unwrap();
+        assert_eq!(tune.sections.len(), 2);
+        let Section::Repeat { body, .. } = &tune.sections[1] else {
+            panic!("expected Repeat");
+        };
+        assert_eq!(body.len(), 1);
+        assert_eq!(body[0].elements.len(), 3); // d e f
     }
 }

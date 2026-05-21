@@ -18,10 +18,14 @@ pub fn emit(tune: &Tune) -> String {
 
     let key_sig = KeySig::from_key(&tune.header.key);
     let dl = &tune.header.default_length;
+    let time = &tune.header.time;
 
     for section in &tune.sections {
         match section {
             Section::Plain(bars) => {
+                if let Some(dur) = pickup_duration(bars, time, dl) {
+                    out.push_str(&format!("    \\partial {}\n", dur));
+                }
                 for bar in bars {
                     out.push_str(&format!("    {} |\n", emit_bar(bar, dl, &key_sig)));
                 }
@@ -29,6 +33,9 @@ pub fn emit(tune: &Tune) -> String {
             Section::Repeat { body, alternatives } => {
                 let n_voltas = alternatives.len().max(2);
                 out.push_str(&format!("    \\repeat volta {} {{\n", n_voltas));
+                if let Some(dur) = pickup_duration(body, time, dl) {
+                    out.push_str(&format!("      \\partial {}\n", dur));
+                }
                 for bar in body {
                     out.push_str(&format!("      {} |\n", emit_bar(bar, dl, &key_sig)));
                 }
@@ -194,6 +201,64 @@ fn default_q(p: u8) -> u8 {
     match p { 2 | 4 | 8 => 3, _ => 2 }
 }
 
+// Total duration of a bar as a reduced fraction in L: units.
+fn bar_l_units(bar: &Bar) -> (u32, u32) {
+    let (mut n, mut d) = (0u32, 1u32);
+    for elem in &bar.elements {
+        let (en, ed) = match elem {
+            BarElement::Note(note) => {
+                (note.duration.numerator as u32, note.duration.denominator as u32)
+            }
+            BarElement::Tuplet(t, notes) => {
+                let q = t.q.unwrap_or(default_q(t.p)) as u32;
+                let p = t.p as u32;
+                let (mut tn, mut td) = (0u32, 1u32);
+                for note in notes {
+                    let nn = note.duration.numerator as u32 * q;
+                    let nd = note.duration.denominator as u32 * p;
+                    tn = tn * nd + nn * td;
+                    td *= nd;
+                    let g = gcd(tn, td);
+                    tn /= g; td /= g;
+                }
+                (tn, td)
+            }
+        };
+        n = n * ed + en * d;
+        d *= ed;
+        let g = gcd(n, d);
+        n /= g; d /= g;
+    }
+    (n, d)
+}
+
+// Returns a LilyPond \partial duration string if the first bar is shorter than a full bar.
+fn pickup_duration(bars: &[Bar], time: &TimeSignature, dl: &Duration) -> Option<String> {
+    let first = bars.first()?;
+    let (bar_n, bar_d) = bar_l_units(first);
+    if bar_n == 0 { return None; }
+
+    // Full bar in L: units = (M_num * L_den) / (M_den * L_num)
+    let full_n = time.numerator as u32 * dl.denominator as u32;
+    let full_d = time.denominator as u32 * dl.numerator as u32;
+
+    // Pickup if bar_n/bar_d < full_n/full_d
+    if bar_n * full_d >= full_n * bar_d { return None; }
+
+    // Pickup duration in whole notes = bar_n/bar_d * L_num/L_den
+    let pn = bar_n * dl.numerator as u32;
+    let pd = bar_d * dl.denominator as u32;
+    let g = gcd(pn, pd);
+    let (pn, pd) = (pn / g, pd / g);
+
+    let dur = match (pn, pd) {
+        (1, d) => format!("{}", d),
+        (3, d) => format!("{}.", d / 2),
+        _ => return None,
+    };
+    Some(dur)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,6 +409,19 @@ mod tests {
     }
 
     #[test]
+    fn emits_partial_for_two_note_pickup() {
+        // 2 eighth notes in 6/8 = \partial 4
+        let out = emit_str("M:6/8\nL:1/8\nK:G\n|:cd|efgabc:|");
+        assert!(out.contains("\\partial 4\n"));
+    }
+
+    #[test]
+    fn no_partial_for_full_first_bar() {
+        let out = emit_str("M:6/8\nL:1/8\nK:G\n|:abcdef|gabcde:|");
+        assert!(!out.contains("\\partial"));
+    }
+
+    #[test]
     fn full_output() {
         let out = emit_str("T:The Morning Dew\nM:4/4\nL:1/8\nK:D\nabc | def");
         let expected = "\
@@ -357,6 +435,7 @@ mod tests {
   \\new Staff {
     \\key d \\major
     \\time 4/4
+    \\partial 4.
     a''8 b''8 cis''8 |
     d''8 e''8 fis''8 |
   }

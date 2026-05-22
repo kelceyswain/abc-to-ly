@@ -1,7 +1,7 @@
 use std::iter::Peekable;
 
 use crate::ast::{
-    Bar, BarElement, Duration, Grace, Header, Key, Mode, Pitch, Section, TimeSignature, Token, Tune,
+    Bar, BarElement, Duration, Grace, Header, Key, Mode, Pitch, Section, TimeSignature, TimeSymbol, Token, Tune,
 };
 
 #[allow(dead_code)]
@@ -213,10 +213,17 @@ fn parse_fraction(s: &str) -> Option<Duration> {
 }
 
 fn parse_time_sig(s: &str) -> Option<TimeSignature> {
+    let s = s.trim();
+    match s {
+        "C"  => return Some(TimeSignature { numerator: 4, denominator: 4, symbol: Some(TimeSymbol::Common) }),
+        "C|" => return Some(TimeSignature { numerator: 2, denominator: 2, symbol: Some(TimeSymbol::Cut) }),
+        _ => {}
+    }
     let (num, den) = s.split_once('/')?;
     Some(TimeSignature {
         numerator: num.trim().parse().ok()?,
         denominator: den.trim().parse().ok()?,
+        symbol: None,
     })
 }
 

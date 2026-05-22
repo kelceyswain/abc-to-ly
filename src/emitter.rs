@@ -1,4 +1,4 @@
-use crate::ast::{Accidental, Bar, BarElement, Duration, Grace, Key, Mode, Note, Ornament, Pitch, Section, TimeSignature, Tune, Tuplet};
+use crate::ast::{Accidental, Bar, BarElement, Duration, Grace, Key, Mode, Note, Ornament, Pitch, Section, TimeSignature, TimeSymbol, Tune, Tuplet};
 
 pub fn emit(tune: &Tune, style: Option<&str>) -> String {
     let mut out = String::new();
@@ -134,7 +134,11 @@ fn emit_key(key: &Key) -> String {
 }
 
 fn emit_time(time: &TimeSignature) -> String {
-    format!("\\time {}/{}", time.numerator, time.denominator)
+    match time.symbol {
+        Some(TimeSymbol::Common) => "\\commonTime".to_string(),
+        Some(TimeSymbol::Cut)    => "\\cutTime".to_string(),
+        None => format!("\\time {}/{}", time.numerator, time.denominator),
+    }
 }
 
 fn emit_bar(bar: &Bar, default_len: &Duration, key_sig: &KeySig) -> String {
@@ -340,6 +344,16 @@ mod tests {
     #[test]
     fn emits_time_sig() {
         assert!(emit_str("M:6/8\nL:1/8\nK:G").contains("\\time 6/8"));
+    }
+
+    #[test]
+    fn emits_common_time() {
+        assert!(emit_str("M:C\nL:1/8\nK:G").contains("\\commonTime"));
+    }
+
+    #[test]
+    fn emits_cut_time() {
+        assert!(emit_str("M:C|\nL:1/8\nK:G").contains("\\cutTime"));
     }
 
     // --- octave mapping: uppercase C = C4 = lily c', lowercase c = C5 = lily c'' ---

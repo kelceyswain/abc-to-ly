@@ -111,7 +111,11 @@ pub struct Key {
 }
 
 #[derive(Debug)]
+pub enum TimeSymbol { Common, Cut }
+
+#[derive(Debug)]
 pub struct TimeSignature {
     pub numerator: u8,
     pub denominator: u8,
+    pub symbol: Option<TimeSymbol>,
 }

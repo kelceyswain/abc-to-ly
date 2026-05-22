@@ -53,6 +53,8 @@ pub enum Token {
     Header(char, String),
     Tuplet(Tuplet),
     Grace(Vec<Note>, bool), // notes, acciaccatura
+    BrokenRight,            // >
+    BrokenLeft,             // <
     Volta(u8),
     RepeatStart,
     RepeatEnd,

@@ -55,7 +55,10 @@ impl<'a> Lexer<'a> {
             return match self.chars.peek()? {
                 'A'..='G' | 'a'..='g' => self.lex_note(),
                 '^' | '_' | '=' | '~' => self.lex_note(),
+                '>' => { self.chars.next(); Some(Token::BrokenRight) }
+                '<' => { self.chars.next(); Some(Token::BrokenLeft) }
                 '{' => self.lex_grace(),
+                '[' => self.lex_square_bracket(),
                 '(' => self.lex_tuplet(),
                 '|' => self.lex_barline(),
                 ':' => self.lex_repeat_end(),
@@ -200,6 +203,22 @@ impl<'a> Lexer<'a> {
             None
         };
         Some(Token::Tuplet(Tuplet { p, q, r }))
+    }
+
+    fn lex_square_bracket(&mut self) -> Option<Token> {
+        self.chars.next(); // consume '['
+        match self.chars.peek().copied() {
+            Some(c) if c.is_ascii_digit() => {
+                self.chars.next();
+                Some(Token::Volta(c as u8 - b'0'))
+            }
+            Some('|') => {
+                // [| is a double bar variant
+                self.chars.next();
+                Some(Token::DoubleBar)
+            }
+            _ => Some(Token::Unknown)
+        }
     }
 
     fn lex_grace(&mut self) -> Option<Token> {
@@ -493,6 +512,15 @@ mod tests {
         let tokens = lex("(2cd");
         assert!(matches!(&tokens[0], Token::Tuplet(t) if t.p == 2));
         assert_eq!(tokens.len(), 3);
+    }
+
+    // --- volta ---
+
+    #[test]
+    fn square_bracket_volta() {
+        let tokens = lex("[1c [2d");
+        assert!(matches!(tokens[0], Token::Volta(1)));
+        assert!(matches!(tokens[2], Token::Volta(2)));
     }
 
     // --- ornaments ---

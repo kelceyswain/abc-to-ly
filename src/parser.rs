@@ -94,7 +94,28 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             match self.tokens.next() {
                 None => break,
 
-                Some(Token::Note(n)) => cur.push(BarElement::Note(n)),
+                Some(Token::Note(mut n)) => {
+                    // Count consecutive broken rhythm arrows; stop if direction flips
+                    let mut count: i32 = 0;
+                    loop {
+                        match self.tokens.peek() {
+                            Some(Token::BrokenRight) if count >= 0 => { self.tokens.next(); count += 1; }
+                            Some(Token::BrokenLeft)  if count <= 0 => { self.tokens.next(); count -= 1; }
+                            _ => break,
+                        }
+                    }
+                    if count != 0 {
+                        let arrows = count.unsigned_abs();
+                        n.duration = broken_dur(n.duration, count > 0, arrows);
+                        cur.push(BarElement::Note(n));
+                        if let Some(Token::Note(mut m)) = self.tokens.next() {
+                            m.duration = broken_dur(m.duration, count < 0, arrows);
+                            cur.push(BarElement::Note(m));
+                        }
+                    } else {
+                        cur.push(BarElement::Note(n));
+                    }
+                }
 
                 Some(Token::Grace(grace_notes, acciaccatura)) => {
                     if let Some(Token::Note(mut main)) = self.tokens.next() {
@@ -185,7 +206,8 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                     in_repeat = true;
                 }
 
-                Some(Token::Header(_, _) | Token::Unknown) => {}
+                Some(Token::Header(_, _) | Token::Unknown
+                    | Token::BrokenRight | Token::BrokenLeft) => {}
             }
         }
 
@@ -202,6 +224,23 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
         (sections, final_bar)
     }
+}
+
+// Long note (n arrows): duration × (2^(n+1) − 1) / 2^n
+// Short note:            duration × 1 / 2^n
+fn broken_dur(dur: Duration, long: bool, n: u32) -> Duration {
+    let factor = 1u32 << n;
+    let (new_num, new_den) = if long {
+        (dur.numerator as u32 * (factor * 2 - 1), dur.denominator as u32 * factor)
+    } else {
+        (dur.numerator as u32, dur.denominator as u32 * factor)
+    };
+    let g = gcd(new_num, new_den);
+    Duration { numerator: (new_num / g) as u8, denominator: (new_den / g) as u8 }
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 fn parse_fraction(s: &str) -> Option<Duration> {
@@ -367,6 +406,30 @@ mod tests {
         assert_eq!(tune.sections.len(), 2);
         assert!(matches!(tune.sections[0], Section::Repeat { .. }));
         assert!(matches!(tune.sections[1], Section::Repeat { .. }));
+    }
+
+    #[test]
+    fn broken_rhythm_right() {
+        // A>d: A gets 3/2, d gets 1/2
+        let tune = parse("M:4/4\nL:1/8\nK:C\nA>d").unwrap();
+        let bars = plain_bars(&tune);
+        let BarElement::Note(long) = &bars[0].elements[0] else { panic!() };
+        let BarElement::Note(short) = &bars[0].elements[1] else { panic!() };
+        assert_eq!(long.duration.numerator,   3);
+        assert_eq!(long.duration.denominator, 2);
+        assert_eq!(short.duration.numerator,  1);
+        assert_eq!(short.duration.denominator,2);
+    }
+
+    #[test]
+    fn broken_rhythm_left() {
+        // A<d: A gets 1/2, d gets 3/2
+        let tune = parse("M:4/4\nL:1/8\nK:C\nA<d").unwrap();
+        let bars = plain_bars(&tune);
+        let BarElement::Note(short) = &bars[0].elements[0] else { panic!() };
+        let BarElement::Note(long)  = &bars[0].elements[1] else { panic!() };
+        assert_eq!(short.duration.denominator, 2);
+        assert_eq!(long.duration.numerator,    3);
     }
 
     #[test]

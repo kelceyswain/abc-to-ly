@@ -22,6 +22,10 @@ struct Args {
     /// LilyPond style file to include after \\version (e.g. \\paper block, staff size)
     #[arg(short, long)]
     style: Option<PathBuf>,
+
+    /// Run lilypond on the output file after writing it
+    #[arg(short, long)]
+    compile: bool,
 }
 
 fn main() {
@@ -56,4 +60,21 @@ fn main() {
     }
 
     println!("wrote {}", output_path.display());
+
+    if args.compile {
+        match std::process::Command::new("lilypond").arg(&output_path).status() {
+            Ok(status) if status.success() => {}
+            Ok(status) => {
+                eprintln!("lilypond exited with {status}");
+                std::process::exit(status.code().unwrap_or(1));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("lilypond not found — install it to compile .ly files");
+            }
+            Err(e) => {
+                eprintln!("error running lilypond: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
 }

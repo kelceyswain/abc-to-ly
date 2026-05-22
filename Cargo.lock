@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "abc2ly"
+name = "abc-to-ly"
 version = "0.1.0"
 dependencies = [
  "clap",

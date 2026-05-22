@@ -1,7 +1,7 @@
 use std::iter::Peekable;
 
 use crate::ast::{
-    Bar, BarElement, Duration, Header, Key, Mode, Pitch, Section, TimeSignature, Token, Tune,
+    Bar, BarElement, Duration, Grace, Header, Key, Mode, Pitch, Section, TimeSignature, Token, Tune,
 };
 
 #[allow(dead_code)]
@@ -94,6 +94,13 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 None => break,
 
                 Some(Token::Note(n)) => cur.push(BarElement::Note(n)),
+
+                Some(Token::Grace(grace_notes, acciaccatura)) => {
+                    if let Some(Token::Note(mut main)) = self.tokens.next() {
+                        main.grace = Some(Grace { notes: grace_notes, acciaccatura });
+                        cur.push(BarElement::Note(main));
+                    }
+                }
 
                 Some(Token::Tuplet(t)) => {
                     let count = t.r.unwrap_or(t.p) as usize;

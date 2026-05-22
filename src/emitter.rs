@@ -1,4 +1,4 @@
-use crate::ast::{Accidental, Bar, BarElement, Duration, Key, Mode, Note, Pitch, Section, TimeSignature, Tune, Tuplet};
+use crate::ast::{Accidental, Bar, BarElement, Duration, Grace, Key, Mode, Note, Ornament, Pitch, Section, TimeSignature, Tune, Tuplet};
 
 pub fn emit(tune: &Tune, style: Option<&str>) -> String {
     let mut out = String::new();
@@ -141,19 +141,42 @@ fn emit_bar(bar: &Bar, default_len: &Duration, key_sig: &KeySig) -> String {
         .join(" ")
 }
 
+fn emit_grace(grace: &Grace, key_sig: &KeySig) -> String {
+    let keyword = if grace.acciaccatura { "\\acciaccatura" } else { "\\appoggiatura" };
+    // Grace notes are always eighth notes in LilyPond
+    let eighth_len = Duration { numerator: 1, denominator: 8 };
+    let notes: Vec<String> = grace.notes.iter()
+        .map(|n| emit_note(n, &eighth_len, key_sig))
+        .collect();
+    if notes.len() == 1 {
+        format!("{} {} ", keyword, notes[0])
+    } else {
+        format!("{} {{ {} }} ", keyword, notes.join(" "))
+    }
+}
+
 fn emit_note(note: &Note, default_len: &Duration, key_sig: &KeySig) -> String {
+    let grace_prefix = note.grace.as_ref()
+        .map(|g| emit_grace(g, key_sig))
+        .unwrap_or_default();
     let acc_suffix = match &note.accidental {
         Some(Accidental::Sharp)   => "is",
         Some(Accidental::Flat)    => "es",
         Some(Accidental::Natural) => "",    // plain pitch name = natural; LilyPond prints the sign
         None => key_sig.acc_suffix(&note.pitch),
     };
+    let ornament = match note.ornament {
+        Some(Ornament::Turn) => "\\turn",
+        None => "",
+    };
     format!(
-        "{}{}{}{}",
+        "{}{}{}{}{}{}",
+        grace_prefix,
         pitch_name(&note.pitch),
         acc_suffix,
         emit_octave(note.octave),
         lily_duration(&note.duration, default_len),
+        ornament,
     )
 }
 
@@ -406,6 +429,29 @@ mod tests {
     fn emits_bar_separators() {
         let out = emit_str("M:4/4\nL:1/4\nK:C\nc | d");
         assert_eq!(out.matches(" |").count(), 2);
+    }
+
+    #[test]
+    fn emits_appoggiatura() {
+        let out = emit_str("M:6/8\nL:1/8\nK:G\n{g}a");
+        assert!(out.contains("\\appoggiatura g''8 a''8"));
+    }
+
+    #[test]
+    fn emits_acciaccatura() {
+        let out = emit_str("M:6/8\nL:1/8\nK:G\n{/g}a");
+        assert!(out.contains("\\acciaccatura g''8 a''8"));
+    }
+
+    #[test]
+    fn emits_multi_note_grace() {
+        let out = emit_str("M:6/8\nL:1/8\nK:G\n{ga}b");
+        assert!(out.contains("\\appoggiatura { g''8 a''8 } b''8"));
+    }
+
+    #[test]
+    fn emits_turn_ornament() {
+        assert!(emit_str("M:6/8\nL:1/8\nK:G\n~G").contains("g'8\\turn"));
     }
 
     #[test]

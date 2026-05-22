@@ -23,9 +23,13 @@ struct Args {
     #[arg(short, long)]
     style: Option<PathBuf>,
 
-    /// Run lilypond on the output file after writing it
+    /// Run lilypond to produce a PDF
     #[arg(short, long)]
     compile: bool,
+
+    /// Run lilypond to produce an SVG (implies --compile)
+    #[arg(long)]
+    svg: bool,
 }
 
 fn main() {
@@ -61,20 +65,36 @@ fn main() {
 
     println!("wrote {}", output_path.display());
 
-    if args.compile {
-        match std::process::Command::new("lilypond").arg(&output_path).status() {
-            Ok(status) if status.success() => {}
-            Ok(status) => {
-                eprintln!("lilypond exited with {status}");
-                std::process::exit(status.code().unwrap_or(1));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                eprintln!("lilypond not found — install it to compile .ly files");
-            }
-            Err(e) => {
-                eprintln!("error running lilypond: {e}");
-                std::process::exit(1);
-            }
+    if args.compile || args.svg {
+        run_lilypond(&output_path, args.svg);
+    }
+}
+
+fn run_lilypond(ly_path: &PathBuf, svg: bool) {
+    let mut cmd = std::process::Command::new("lilypond");
+
+    if svg {
+        cmd.arg("--svg");
+        cmd.arg("-dno-point-and-click");
+        cmd.arg("-dno-use-paper-size-for-page");
+    }
+
+    // Place output next to the .ly file rather than in the current directory
+    cmd.arg("-o").arg(ly_path.with_extension(""));
+    cmd.arg(ly_path);
+
+    match cmd.status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            eprintln!("lilypond exited with {status}");
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("lilypond not found — install it to compile .ly files");
+        }
+        Err(e) => {
+            eprintln!("error running lilypond: {e}");
+            std::process::exit(1);
         }
     }
 }

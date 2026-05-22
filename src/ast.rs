@@ -19,10 +19,23 @@ pub struct Duration {
 }
 
 #[derive(Debug)]
+pub enum Ornament {
+    Turn,
+}
+
+#[derive(Debug)]
+pub struct Grace {
+    pub notes: Vec<Note>,
+    pub acciaccatura: bool,
+}
+
+#[derive(Debug)]
 pub struct Note {
     pub pitch: Pitch,
     pub octave: i8,  // 0 = middle octave, +1/-1 etc
     pub accidental: Option<Accidental>,
+    pub ornament: Option<Ornament>,
+    pub grace: Option<Grace>,
     pub duration: Duration, // relative to L: default, so 1 = default, 2 = double
 }
 
@@ -39,6 +52,7 @@ pub enum Token {
     Note(Note),
     Header(char, String),
     Tuplet(Tuplet),
+    Grace(Vec<Note>, bool), // notes, acciaccatura
     Volta(u8),
     RepeatStart,
     RepeatEnd,

@@ -1,4 +1,4 @@
-use crate::ast::{Token, Accidental, Pitch, Note, Duration, Tuplet};
+use crate::ast::{Token, Accidental, Grace, Ornament, Pitch, Note, Duration, Tuplet};
 
 use std::str::Chars;
 use std::iter::Peekable;
@@ -44,7 +44,7 @@ impl<'a> Lexer<'a> {
                             self.chars.next(); // consume ':'
                             return self.lex_header_rest(key);
                         } else {
-                            return self.lex_note_rest(key, None);
+                            return self.lex_note_rest(key, None, None);
                         }
                     }
                 }
@@ -54,7 +54,8 @@ impl<'a> Lexer<'a> {
 
             return match self.chars.peek()? {
                 'A'..='G' | 'a'..='g' => self.lex_note(),
-                '^' | '_' | '=' => self.lex_note(),
+                '^' | '_' | '=' | '~' => self.lex_note(),
+                '{' => self.lex_grace(),
                 '(' => self.lex_tuplet(),
                 '|' => self.lex_barline(),
                 ':' => self.lex_repeat_end(),
@@ -97,6 +98,12 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_note(&mut self) -> Option<Token> {
+        let ornament = if self.chars.peek() == Some(&'~') {
+            self.chars.next();
+            Some(Ornament::Turn)
+        } else {
+            None
+        };
         let accidental = match self.chars.peek() {
             Some('^') => { self.chars.next(); Some(Accidental::Sharp) }
             Some('_') => { self.chars.next(); Some(Accidental::Flat) }
@@ -104,10 +111,10 @@ impl<'a> Lexer<'a> {
             _ => None,
         };
         let pitch_char = self.chars.next()?;
-        self.lex_note_rest(pitch_char, accidental)
+        self.lex_note_rest(pitch_char, accidental, ornament)
     }
 
-    fn lex_note_rest(&mut self, pitch_char: char, accidental: Option<Accidental>) -> Option<Token> {
+    fn lex_note_rest(&mut self, pitch_char: char, accidental: Option<Accidental>, ornament: Option<Ornament>) -> Option<Token> {
         let (pitch, base_octave) = match pitch_char {
             'C' => (Pitch::C, -1),
             'D' => (Pitch::D, -1),
@@ -136,7 +143,7 @@ impl<'a> Lexer<'a> {
         }
 
         let duration = self.lex_duration();
-        Some(Token::Note(Note { pitch, octave, accidental, duration }))
+        Some(Token::Note(Note { pitch, octave, accidental, ornament, grace: None, duration }))
     }
 
     fn lex_duration(&mut self) -> Duration {
@@ -192,6 +199,56 @@ impl<'a> Lexer<'a> {
             None
         };
         Some(Token::Tuplet(Tuplet { p, q, r }))
+    }
+
+    fn lex_grace(&mut self) -> Option<Token> {
+        self.chars.next(); // consume '{'
+        let acciaccatura = if self.chars.peek() == Some(&'/') {
+            self.chars.next();
+            true
+        } else {
+            false
+        };
+
+        let mut notes = Vec::new();
+        while let Some(&c) = self.chars.peek() {
+            match c {
+                '}' => { self.chars.next(); break; }
+                ' ' => { self.chars.next(); }
+                _ => {
+                    let accidental = match self.chars.peek() {
+                        Some('^') => { self.chars.next(); Some(Accidental::Sharp) }
+                        Some('_') => { self.chars.next(); Some(Accidental::Flat) }
+                        Some('=') => { self.chars.next(); Some(Accidental::Natural) }
+                        _ => None,
+                    };
+                    let Some(&pc) = self.chars.peek() else { break };
+                    if !pc.is_ascii_alphabetic() { self.chars.next(); continue; }
+                    self.chars.next();
+                    let base_octave: i8 = if pc.is_uppercase() { -1 } else { 0 };
+                    let mut octave = base_octave;
+                    while let Some(&m) = self.chars.peek() {
+                        match m {
+                            '\'' => { octave += 1; self.chars.next(); }
+                            ',' => { octave -= 1; self.chars.next(); }
+                            _ => break,
+                        }
+                    }
+                    let pitch = match pc.to_ascii_lowercase() {
+                        'c' => Pitch::C, 'd' => Pitch::D, 'e' => Pitch::E,
+                        'f' => Pitch::F, 'g' => Pitch::G, 'a' => Pitch::A,
+                        'b' => Pitch::B, _ => continue,
+                    };
+                    notes.push(Note {
+                        pitch, octave, accidental,
+                        ornament: None, grace: None,
+                        duration: Duration { numerator: 1, denominator: 1 },
+                    });
+                }
+            }
+        }
+
+        if notes.is_empty() { None } else { Some(Token::Grace(notes, acciaccatura)) }
     }
 
     fn lex_header_rest(&mut self, key: char) -> Option<Token> {
@@ -435,6 +492,31 @@ mod tests {
         let tokens = lex("(2cd");
         assert!(matches!(&tokens[0], Token::Tuplet(t) if t.p == 2));
         assert_eq!(tokens.len(), 3);
+    }
+
+    // --- ornaments ---
+
+    #[test]
+    fn turn_ornament_on_uppercase() {
+        let tokens = lex("~G");
+        let n = get_note(&tokens, 0);
+        assert!(matches!(n.pitch, Pitch::G));
+        assert!(matches!(n.ornament, Some(crate::ast::Ornament::Turn)));
+    }
+
+    #[test]
+    fn turn_ornament_with_accidental() {
+        let tokens = lex("~^g");
+        let n = get_note(&tokens, 0);
+        assert!(matches!(n.accidental, Some(Accidental::Sharp)));
+        assert!(matches!(n.ornament, Some(crate::ast::Ornament::Turn)));
+    }
+
+    #[test]
+    fn no_ornament_on_plain_note() {
+        let tokens = lex("g");
+        let n = get_note(&tokens, 0);
+        assert!(n.ornament.is_none());
     }
 
     // --- regression: notes at line start ---

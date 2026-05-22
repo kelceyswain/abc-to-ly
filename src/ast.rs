@@ -59,6 +59,7 @@ pub enum Token {
     RepeatEndStart,
     Bar,
     DoubleBar,
+    FinalBar,
     Unknown,
 }
 
@@ -66,12 +67,14 @@ pub enum Token {
 pub enum Section {
     Plain(Vec<Bar>),
     Repeat { body: Vec<Bar>, alternatives: Vec<Vec<Bar>> },
+    DoubleBar,
 }
 
 #[derive(Debug)]
 pub struct Tune {
     pub header: Header,
     pub sections: Vec<Section>,
+    pub final_bar: bool,
 }
 
 #[derive(Debug)]

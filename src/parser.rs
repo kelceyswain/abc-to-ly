@@ -22,8 +22,8 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
     pub fn parse(&mut self) -> Result<Tune, ParseError> {
         let header = self.parse_header()?;
-        let sections = self.parse_sections();
-        Ok(Tune { header, sections })
+        let (sections, final_bar) = self.parse_sections();
+        Ok(Tune { header, sections, final_bar })
     }
 
     fn parse_header(&mut self) -> Result<Header, ParseError> {
@@ -52,8 +52,9 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     }
 
     #[allow(unused_assignments)]
-    fn parse_sections(&mut self) -> Vec<Section> {
+    fn parse_sections(&mut self) -> (Vec<Section>, bool) {
         let mut sections: Vec<Section> = Vec::new();
+        let mut final_bar = false;
 
         // Accumulator for the bar currently being built
         let mut cur: Vec<BarElement> = Vec::new();
@@ -148,6 +149,19 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                     }
                 }
 
+                Some(Token::FinalBar) => {
+                    flush_bar!();
+                    final_bar = true;
+                    if in_alt {
+                        alts.push(std::mem::take(&mut cur_alt));
+                        finish_repeat!();
+                    } else if in_repeat {
+                        finish_repeat!();
+                    } else if !plain.is_empty() {
+                        sections.push(Section::Plain(std::mem::take(&mut plain)));
+                    }
+                }
+
                 Some(Token::DoubleBar) => {
                     flush_bar!();
                     if in_alt {
@@ -158,6 +172,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                     } else if !plain.is_empty() {
                         sections.push(Section::Plain(std::mem::take(&mut plain)));
                     }
+                    sections.push(Section::DoubleBar);
                 }
 
                 Some(Token::RepeatEndStart) => {
@@ -185,7 +200,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             sections.push(Section::Plain(std::mem::take(&mut plain)));
         }
 
-        sections
+        (sections, final_bar)
     }
 }
 
@@ -331,12 +346,12 @@ mod tests {
     #[test]
     fn parses_repeat_with_alternatives() {
         let tune = parse("M:4/4\nL:1/8\nK:D\n|:abc|def|1gab:|2gcd||").unwrap();
-        assert_eq!(tune.sections.len(), 1);
         let Section::Repeat { body, alternatives } = &tune.sections[0] else {
             panic!("expected Repeat section");
         };
         assert_eq!(body.len(), 2);       // abc, def
         assert_eq!(alternatives.len(), 2); // gab, gcd
+        assert!(matches!(tune.sections[1], Section::DoubleBar));
     }
 
     #[test]

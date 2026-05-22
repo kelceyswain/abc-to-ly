@@ -27,6 +27,10 @@ pub fn emit(tune: &Tune, style: Option<&str>) -> String {
 
     for section in &tune.sections {
         match section {
+            Section::DoubleBar => {
+                out.push_str("    \\bar \"||\"\n");
+                continue;
+            }
             Section::Plain(bars) => {
                 if let Some(dur) = pickup_duration(bars, time, dl) {
                     out.push_str(&format!("    \\partial {}\n", dur));
@@ -59,6 +63,9 @@ pub fn emit(tune: &Tune, style: Option<&str>) -> String {
         }
     }
 
+    if tune.final_bar {
+        out.push_str("    \\bar \"|.\"\n");
+    }
     out.push_str("  }\n}\n");
     out
 }

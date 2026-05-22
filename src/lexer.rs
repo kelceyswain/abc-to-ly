@@ -1,4 +1,4 @@
-use crate::ast::{Token, Accidental, Grace, Ornament, Pitch, Note, Duration, Tuplet};
+use crate::ast::{Token, Accidental, Ornament, Pitch, Note, Duration, Tuplet};
 
 use std::str::Chars;
 use std::iter::Peekable;
@@ -70,6 +70,7 @@ impl<'a> Lexer<'a> {
         match self.chars.peek().copied() {
             Some(':') => { self.chars.next(); Some(Token::RepeatStart) }
             Some('|') => { self.chars.next(); Some(Token::DoubleBar) }
+            Some(']') => { self.chars.next(); Some(Token::FinalBar) }
             Some(c) if c.is_ascii_digit() => {
                 self.chars.next();
                 Some(Token::Volta(c as u8 - b'0'))

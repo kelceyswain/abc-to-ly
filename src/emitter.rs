@@ -1,4 +1,4 @@
-use crate::ast::{Accidental, Bar, BarElement, Duration, Grace, Key, Mode, Note, Ornament, Pitch, Section, TimeSignature, TimeSymbol, Tune, Tuplet};
+use crate::ast::{Accidental, Bar, BarElement, Duration, Grace, Key, Mode, Note, Ornament, Pitch, Section, TimeSignature, Tune, Tuplet};
 
 pub fn emit(tune: &Tune, style: Option<&str>) -> String {
     let mut out = String::new();
@@ -25,7 +25,8 @@ pub fn emit(tune: &Tune, style: Option<&str>) -> String {
     let dl = &tune.header.default_length;
     let time = &tune.header.time;
 
-    for section in &tune.sections {
+    for (i, section) in tune.sections.iter().enumerate() {
+        let next = tune.sections.get(i + 1);
         match section {
             Section::DoubleBar => {
                 out.push_str("    \\bar \"||\"\n");
@@ -37,6 +38,9 @@ pub fn emit(tune: &Tune, style: Option<&str>) -> String {
                 }
                 for bar in bars {
                     out.push_str(&format!("    {} |\n", emit_bar(bar, dl, &key_sig)));
+                }
+                if matches!(next, Some(Section::Repeat { .. })) {
+                    out.push_str("    \\bar \"\"\n");
                 }
             }
             Section::Repeat { body, alternatives } => {
@@ -134,11 +138,7 @@ fn emit_key(key: &Key) -> String {
 }
 
 fn emit_time(time: &TimeSignature) -> String {
-    match time.symbol {
-        Some(TimeSymbol::Common) => "\\commonTime".to_string(),
-        Some(TimeSymbol::Cut)    => "\\cutTime".to_string(),
-        None => format!("\\time {}/{}", time.numerator, time.denominator),
-    }
+    format!("\\time {}/{}", time.numerator, time.denominator)
 }
 
 fn emit_bar(bar: &Bar, default_len: &Duration, key_sig: &KeySig) -> String {
@@ -348,12 +348,12 @@ mod tests {
 
     #[test]
     fn emits_common_time() {
-        assert!(emit_str("M:C\nL:1/8\nK:G").contains("\\commonTime"));
+        assert!(emit_str("M:C\nL:1/8\nK:G").contains("\\time 4/4"));
     }
 
     #[test]
     fn emits_cut_time() {
-        assert!(emit_str("M:C|\nL:1/8\nK:G").contains("\\cutTime"));
+        assert!(emit_str("M:C|\nL:1/8\nK:G").contains("\\time 2/2"));
     }
 
     // --- octave mapping: uppercase C = C4 = lily c', lowercase c = C5 = lily c'' ---

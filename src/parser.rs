@@ -4,12 +4,21 @@ use crate::ast::{
     Bar, BarElement, Duration, Grace, Header, Key, Mode, Pitch, Section, Tempo,
     TimeSignature, TimeSymbol, Token, Tune,
 };
+use crate::util::gcd;
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ParseError {
     MissingHeader(char),
     InvalidValue(char, String),
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::MissingHeader(k) => write!(f, "missing required header '{k}:'"),
+            ParseError::InvalidValue(k, v) => write!(f, "invalid value for '{k}:': {v:?}"),
+        }
+    }
 }
 
 pub struct Parser<I: Iterator<Item = Token>> {
@@ -55,7 +64,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         })
     }
 
-    #[allow(unused_assignments)]
     fn parse_sections(&mut self) -> (Vec<Section>, bool) {
         let mut sections: Vec<Section> = Vec::new();
         let mut final_bar = false;
@@ -126,7 +134,12 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 }
 
                 Some(Token::Grace(grace_notes, acciaccatura)) => {
-                    if let Some(Token::Note(mut main)) = self.tokens.next() {
+                    // Peek first: only consume the next token if it really is a Note.
+                    // Without this check, `{grace}|bar` would silently eat the `|` barline.
+                    // If there's no following Note the grace group is silently dropped.
+                    if matches!(self.tokens.peek(), Some(Token::Note(_)))
+                        && let Some(Token::Note(mut main)) = self.tokens.next()
+                    {
                         main.grace = Some(Grace { notes: grace_notes, acciaccatura });
                         cur.push(BarElement::Note(main));
                     }
@@ -205,12 +218,19 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 }
 
                 Some(Token::RepeatEndStart) => {
-                    // :|: — end a repeat and immediately start a new one
+                    // :|: — end a repeat and immediately start a new one.
+                    // Inline the section push rather than calling finish_repeat!() and then
+                    // setting in_repeat = true: the macro's `in_repeat = false` assignment
+                    // would be immediately overwritten and trigger an unused_assignments warning.
                     flush_bar!();
                     if in_alt {
                         alts.push(std::mem::take(&mut cur_alt));
                     }
-                    finish_repeat!();
+                    sections.push(Section::Repeat {
+                        body: std::mem::take(&mut body),
+                        alternatives: std::mem::take(&mut alts),
+                    });
+                    in_alt = false;
                     in_repeat = true;
                 }
 
@@ -219,13 +239,22 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             }
         }
 
-        // Flush any trailing material
+        // Flush any trailing material.
+        // Inline the section push rather than calling finish_repeat!() here:
+        // the macro also writes `in_repeat = false / in_alt = false`, which are
+        // never read again and trigger an `unused_assignments` warning.
         flush_bar!();
         if in_alt {
             alts.push(std::mem::take(&mut cur_alt));
-            finish_repeat!();
+            sections.push(Section::Repeat {
+                body: std::mem::take(&mut body),
+                alternatives: std::mem::take(&mut alts),
+            });
         } else if in_repeat && !body.is_empty() {
-            finish_repeat!();
+            sections.push(Section::Repeat {
+                body: std::mem::take(&mut body),
+                alternatives: std::mem::take(&mut alts),
+            });
         } else if !plain.is_empty() {
             sections.push(Section::Plain(std::mem::take(&mut plain)));
         }
@@ -237,6 +266,9 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 // Long note (n arrows): duration × (2^(n+1) − 1) / 2^n
 // Short note:            duration × 1 / 2^n
 fn broken_dur(dur: Duration, long: bool, n: u32) -> Duration {
+    // Cap n at 8 (1/256 of the default length) — enough for any real score and
+    // prevents `1u32 << n` from panicking on shift-by-≥32 in debug builds.
+    let n = n.min(8);
     let factor = 1u32 << n;
     let (new_num, new_den) = if long {
         (dur.numerator as u32 * (factor * 2 - 1), dur.denominator as u32 * factor)
@@ -244,11 +276,11 @@ fn broken_dur(dur: Duration, long: bool, n: u32) -> Duration {
         (dur.numerator as u32, dur.denominator as u32 * factor)
     };
     let g = gcd(new_num, new_den);
-    Duration { numerator: (new_num / g) as u8, denominator: (new_den / g) as u8 }
-}
-
-fn gcd(a: u32, b: u32) -> u32 {
-    if b == 0 { a } else { gcd(b, a % b) }
+    // Clamp to u8: values this large would be unrepresentable in LilyPond anyway.
+    Duration {
+        numerator:   (new_num / g).min(u8::MAX as u32) as u8,
+        denominator: (new_den / g).min(u8::MAX as u32) as u8,
+    }
 }
 
 fn parse_fraction(s: &str) -> Option<Duration> {

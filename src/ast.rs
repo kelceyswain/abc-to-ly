@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 #[derive(Debug, PartialEq, Clone)]
 pub enum Accidental {
     Sharp,
@@ -70,7 +68,9 @@ pub enum Token {
     Grace(Vec<Note>, bool), // notes, acciaccatura
     BrokenRight,            // >
     BrokenLeft,             // <
-    Volta(u8),
+    // The number is lexed but the parser currently orders alternatives by position
+    // rather than by volta label — see parser::parse_sections.
+    Volta(#[allow(dead_code)] u8),
     RepeatStart,
     RepeatEnd,
     RepeatEndStart,
@@ -134,6 +134,9 @@ pub struct Key {
     pub mode: Mode,
 }
 
+/// Parsed from `M:C` / `M:C|` but the emitter currently always emits `\time n/d`
+/// numerically.  Reserved for when the emitter grows `\commonTime` / `\cutTime` support.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum TimeSymbol { Common, Cut }
 
@@ -141,5 +144,6 @@ pub enum TimeSymbol { Common, Cut }
 pub struct TimeSignature {
     pub numerator: u8,
     pub denominator: u8,
+    #[allow(dead_code)]   // see TimeSymbol above
     pub symbol: Option<TimeSymbol>,
 }

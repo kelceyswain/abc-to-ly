@@ -2,6 +2,7 @@ mod ast;
 mod emitter;
 mod lexer;
 mod parser;
+mod util;
 
 use std::path::PathBuf;
 use std::fs;
@@ -53,7 +54,7 @@ fn main() {
     let ly = match Parser::new(Lexer::new(&input)).parse() {
         Ok(tune) => emitter::emit(&tune, style.as_deref()),
         Err(e) => {
-            eprintln!("parse error: {e:?}");
+            eprintln!("parse error: {e}");
             std::process::exit(1);
         }
     };

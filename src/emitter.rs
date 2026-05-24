@@ -1,4 +1,11 @@
 use crate::ast::{Accidental, Bar, BarElement, Duration, Grace, Key, Mode, Note, Ornament, Pitch, Rest, Section, Tempo, TimeSignature, Tune, Tuplet};
+use crate::util::gcd;
+
+/// Escape characters that are special inside a LilyPond double-quoted string.
+/// Without this a crafted `T:` title could inject arbitrary LilyPond/Scheme code.
+fn escape_ly_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
 
 pub fn emit(tune: &Tune, style: Option<&str>) -> String {
     let mut out = String::new();
@@ -13,7 +20,7 @@ pub fn emit(tune: &Tune, style: Option<&str>) -> String {
     if !tune.header.title.is_empty() {
         out.push_str(&format!(
             "\\header {{\n  title = \"{}\"\n}}\n\n",
-            tune.header.title
+            escape_ly_string(&tune.header.title)
         ));
     }
 
@@ -245,7 +252,8 @@ fn pitch_name(pitch: &Pitch) -> &'static str {
 fn emit_octave(octave: i8) -> String {
     // ABC uppercase C = C4 (middle C) = LilyPond c' (one apostrophe).
     // ABC octave -1 → lily 1, ABC octave 0 → lily 2, etc.
-    let n = octave + 2;
+    // Use i16 for the addition so that i8::MAX (127) + 2 = 129 doesn't overflow.
+    let n = octave as i16 + 2;
     if n > 0 {
         "'".repeat(n as usize)
     } else if n < 0 {
@@ -258,16 +266,16 @@ fn emit_octave(octave: i8) -> String {
 fn lily_duration(note: &Duration, default_len: &Duration) -> String {
     let num = (note.numerator as u32) * (default_len.numerator as u32);
     let den = (note.denominator as u32) * (default_len.denominator as u32);
+    // Guard against zero denominators from malformed input (e.g. denominator
+    // overflowed to 0 in the lexer), which would make gcd panic via 0/0.
+    if den == 0 { return "1".to_string(); }
     let g = gcd(num, den);
     match (num / g, den / g) {
-        (1, d) => format!("{}", d),
+        (0, _) => "1".to_string(),   // degenerate zero numerator → whole note
+        (1, d) => format!("{d}"),
         (3, d) => format!("{}.", d / 2),
-        (n, d) => format!("{}", d / n),
+        (n, d) => format!("{}", d / n), // integer fallback; correct for even multiples
     }
-}
-
-fn gcd(a: u32, b: u32) -> u32 {
-    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 fn default_q(p: u8) -> u8 {
@@ -328,9 +336,15 @@ fn pickup_duration(bars: &[Bar], time: &TimeSignature, dl: &Duration) -> Option<
     let (pn, pd) = (pn / g, pd / g);
 
     let dur = match (pn, pd) {
-        (1, d) => format!("{}", d),
+        (1, d) => format!("{d}"),
         (3, d) => format!("{}.", d / 2),
-        _ => return None,
+        _ => {
+            eprintln!(
+                "warning: pickup bar has an unrepresentable duration \
+                 ({pn}/{pd} of a whole note); \\partial will not be emitted"
+            );
+            return None;
+        }
     };
     Some(dur)
 }

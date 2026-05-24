@@ -35,18 +35,17 @@ impl<'a> Lexer<'a> {
                 }
             }
 
-            if self.at_line_start {
-                if let Some(&c) = self.chars.peek() {
-                    if c.is_ascii_alphabetic() {
-                        self.at_line_start = false;
-                        let key = self.chars.next().unwrap();
-                        if self.chars.peek().copied() == Some(':') {
-                            self.chars.next(); // consume ':'
-                            return self.lex_header_rest(key);
-                        } else {
-                            return self.lex_note_rest(key, None, None);
-                        }
-                    }
+            if self.at_line_start
+                && let Some(&c) = self.chars.peek()
+                && c.is_ascii_alphabetic()
+            {
+                self.at_line_start = false;
+                let key = self.chars.next().unwrap();
+                if self.chars.peek().copied() == Some(':') {
+                    self.chars.next(); // consume ':'
+                    return self.lex_header_rest(key);
+                } else {
+                    return self.lex_note_rest(key, None, None);
                 }
             }
 
@@ -89,11 +88,11 @@ impl<'a> Lexer<'a> {
             Some('|') => {
                 self.chars.next();
                 // :|n — push volta token so it's returned next call
-                if let Some(c) = self.chars.peek().copied() {
-                    if c.is_ascii_digit() {
-                        self.chars.next();
-                        self.push_back = Some(Token::Volta(c as u8 - b'0'));
-                    }
+                if let Some(c) = self.chars.peek().copied()
+                    && c.is_ascii_digit()
+                {
+                    self.chars.next();
+                    self.push_back = Some(Token::Volta(c as u8 - b'0'));
                 }
                 Some(Token::RepeatEnd)
             }
@@ -157,14 +156,16 @@ impl<'a> Lexer<'a> {
             'g' => (Pitch::G, 0),
             'a' => (Pitch::A, 0),
             'b' => (Pitch::B, 0),
-            _ => return None,
+            // Not a recognised note letter (e.g. an unknown header like `H`).
+            // Return Unknown rather than None so we don't signal end-of-stream.
+            _ => return Some(Token::Unknown),
         };
 
-        let mut octave = base_octave;
+        let mut octave: i8 = base_octave;
         while let Some(&c) = self.chars.peek() {
             match c {
-                '\'' => { octave += 1; self.chars.next(); }
-                ',' => { octave -= 1; self.chars.next(); }
+                '\'' => { octave = octave.saturating_add(1); self.chars.next(); }
+                ',' => { octave = octave.saturating_sub(1); self.chars.next(); }
                 _ => break,
             }
         }
@@ -181,15 +182,20 @@ impl<'a> Lexer<'a> {
         let denominator = if let Some('/') = self.chars.peek().copied() {
             self.chars.next(); // consume first '/'
 
-            // count any additinoal slashes
-            let mut denom = 2u8;
+            // Count additional slashes.  Use u32 to avoid u8 overflow:
+            // 8+ slashes would wrap 2u8 to 0, later causing division by zero.
+            let mut denom: u32 = 2;
             while let Some('/') = self.chars.peek().copied() {
                 self.chars.next();
-                denom *= 2;
+                denom = denom.saturating_mul(2);
             }
 
-            // explicit denominator after slash overrides the slash-count
-            self.lex_digits().unwrap_or(denom)
+            // Explicit denominator after slash overrides the slash-count.
+            // Clamp to u8::MAX (255) — anything larger is an unrepresentable duration.
+            self.lex_digits()
+                .map(|d| d as u32)
+                .unwrap_or(denom)
+                .min(u8::MAX as u32) as u8
         } else {
             1
         };
@@ -198,16 +204,19 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_digits(&mut self) -> Option<u8> {
-        let mut s = String::new();
+        let mut n: u32 = 0;
+        let mut any = false;
         while let Some(&c) = self.chars.peek() {
             if c.is_ascii_digit() {
-                s.push(c);
+                // Accumulate as u32 to avoid intermediate overflow; clamp to u8 at the end.
+                n = n.saturating_mul(10).saturating_add((c as u8 - b'0') as u32);
+                any = true;
                 self.chars.next();
             } else {
                 break;
             }
         }
-        s.parse().ok()
+        if any { Some(n.min(u8::MAX as u32) as u8) } else { None }
     }
 
     fn lex_tuplet(&mut self) -> Option<Token> {
@@ -277,11 +286,11 @@ impl<'a> Lexer<'a> {
                     if !pc.is_ascii_alphabetic() { self.chars.next(); continue; }
                     self.chars.next();
                     let base_octave: i8 = if pc.is_uppercase() { -1 } else { 0 };
-                    let mut octave = base_octave;
+                    let mut octave: i8 = base_octave;
                     while let Some(&m) = self.chars.peek() {
                         match m {
-                            '\'' => { octave += 1; self.chars.next(); }
-                            ',' => { octave -= 1; self.chars.next(); }
+                            '\'' => { octave = octave.saturating_add(1); self.chars.next(); }
+                            ',' => { octave = octave.saturating_sub(1); self.chars.next(); }
                             _ => break,
                         }
                     }
@@ -299,7 +308,9 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        if notes.is_empty() { None } else { Some(Token::Grace(notes, acciaccatura)) }
+        // Return Unknown (not None) for an empty grace group `{}`.
+        // Returning None would signal end-of-stream and silently drop all remaining tokens.
+        if notes.is_empty() { Some(Token::Unknown) } else { Some(Token::Grace(notes, acciaccatura)) }
     }
 
     fn lex_header_rest(&mut self, key: char) -> Option<Token> {

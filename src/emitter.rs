@@ -162,6 +162,9 @@ fn emit_tempo(tempo: &Tempo, default_len: &Duration) -> String {
     let num = beat.numerator as u32;
     let den = beat.denominator as u32;
     let lily_dur = match (num, den) {
+        // Guard against a zero numerator from malformed L:/Q: headers (e.g. L:0/8).
+        // `den / num` would panic below, so fall back to a quarter-note beat.
+        (0, _) => "4".to_string(),
         (1, d) => format!("{d}"),
         (3, d) => format!("{}.", d / 2),
         _      => format!("{}", den / num),
@@ -641,6 +644,16 @@ mod tests {
     fn no_partial_for_full_first_bar() {
         let out = emit_str("M:6/8\nL:1/8\nK:G\n|:abcdef|gabcde:|");
         assert!(!out.contains("\\partial"));
+    }
+
+    // --- robustness: malformed headers must not panic ---
+
+    #[test]
+    fn zero_numerator_default_length_does_not_panic() {
+        // L:0/8 is malformed but must not cause a divide-by-zero panic in emit_tempo.
+        // The beat falls back to a quarter note.
+        let out = emit_str("M:4/4\nL:0/8\nK:C\nQ:120");
+        assert!(out.contains("\\tempo 4 = 120"), "expected fallback quarter-note tempo: {out}");
     }
 
     #[test]

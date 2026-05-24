@@ -51,6 +51,8 @@ abc-to-ly tune.abc --svg -s style.ly
 
 A style file is any valid LilyPond snippet, inserted verbatim after the `\version` line and before `\header`. Use it to set paper size, staff size, fonts, and so on. For example:
 
+> **Security note:** The style file is copied into the generated `.ly` output without any validation or sanitisation, and is executed by LilyPond as code. Only use style files from sources you trust.
+
 ```lilypond
 #(set-global-staff-size 18)
 \paper {

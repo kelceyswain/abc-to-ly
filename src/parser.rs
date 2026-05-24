@@ -124,9 +124,14 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                         let arrows = count.unsigned_abs();
                         n.duration = broken_dur(n.duration, count > 0, arrows);
                         cur.push(BarElement::Note(n));
-                        if let Some(Token::Note(mut m)) = self.tokens.next() {
-                            m.duration = broken_dur(m.duration, count < 0, arrows);
-                            cur.push(BarElement::Note(m));
+                        // Peek first: only consume if the next token really is a note.
+                        // The old unconditional next() silently discarded barlines and
+                        // other structural tokens that appeared after the rhythm arrows.
+                        if matches!(self.tokens.peek(), Some(Token::Note(_))) {
+                            if let Some(Token::Note(mut m)) = self.tokens.next() {
+                                m.duration = broken_dur(m.duration, count < 0, arrows);
+                                cur.push(BarElement::Note(m));
+                            }
                         }
                     } else {
                         cur.push(BarElement::Note(n));
@@ -147,12 +152,21 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
                 Some(Token::Tuplet(t)) => {
                     let count = t.r.unwrap_or(t.p) as usize;
-                    let notes = (0..count)
-                        .filter_map(|_| match self.tokens.next() {
-                            Some(Token::Note(n)) => Some(n),
-                            _ => None,
-                        })
-                        .collect();
+                    // Peek before consuming: stop (without eating the token) as soon as
+                    // a non-note appears. The old filter_map approach called next() count
+                    // times unconditionally, silently discarding barlines and other tokens
+                    // that happened to fall inside the tuplet window.
+                    let mut notes = Vec::with_capacity(count);
+                    while notes.len() < count {
+                        match self.tokens.peek() {
+                            Some(Token::Note(_)) => {
+                                if let Some(Token::Note(n)) = self.tokens.next() {
+                                    notes.push(n);
+                                }
+                            }
+                            _ => break,
+                        }
+                    }
                     cur.push(BarElement::Tuplet(t, notes));
                 }
 
@@ -573,6 +587,26 @@ mod tests {
         let BarElement::Note(long)  = &bars[0].elements[1] else { panic!() };
         assert_eq!(short.duration.denominator, 2);
         assert_eq!(long.duration.numerator,    3);
+    }
+
+    #[test]
+    fn tuplet_stops_at_barline() {
+        // (3cd hits a barline before collecting 3 notes; the barline must NOT be
+        // consumed — it should survive as the boundary between two bars.
+        let tune = parse("M:4/4\nL:1/8\nK:C\n(3cd | e").unwrap();
+        let bars = plain_bars(&tune);
+        assert_eq!(bars.len(), 2, "barline after tuplet should produce two bars");
+        assert_eq!(bars[1].elements.len(), 1, "note after barline should be in second bar");
+    }
+
+    #[test]
+    fn broken_rhythm_barline_not_consumed() {
+        // A> followed by a barline instead of a note: the barline must survive
+        // so that d ends up in a separate bar.
+        let tune = parse("M:4/4\nL:1/8\nK:C\nA> | d").unwrap();
+        let bars = plain_bars(&tune);
+        assert_eq!(bars.len(), 2, "barline after broken-rhythm arrow should produce two bars");
+        assert_eq!(bars[1].elements.len(), 1, "note after barline should be in second bar");
     }
 
     #[test]

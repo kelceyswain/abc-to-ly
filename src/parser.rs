@@ -1,7 +1,8 @@
 use std::iter::Peekable;
 
 use crate::ast::{
-    Bar, BarElement, Duration, Grace, Header, Key, Mode, Pitch, Section, TimeSignature, TimeSymbol, Token, Tune,
+    Bar, BarElement, Duration, Grace, Header, Key, Mode, Pitch, Section, Tempo,
+    TimeSignature, TimeSymbol, Token, Tune,
 };
 
 #[allow(dead_code)]
@@ -31,6 +32,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         let mut time: Option<TimeSignature> = None;
         let mut default_length: Option<Duration> = None;
         let mut key: Option<Key> = None;
+        let mut tempo: Option<Tempo> = None;
 
         while matches!(self.tokens.peek(), Some(Token::Header(_, _))) {
             let Some(Token::Header(k, v)) = self.tokens.next() else { break };
@@ -39,6 +41,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 'M' => time = Some(parse_time_sig(&v).ok_or(ParseError::InvalidValue('M', v))?),
                 'L' => default_length = Some(parse_fraction(&v).ok_or(ParseError::InvalidValue('L', v))?),
                 'K' => key = Some(parse_key(&v).ok_or(ParseError::InvalidValue('K', v))?),
+                'Q' => tempo = parse_tempo(&v), // soft failure — bad Q: is silently ignored
                 _ => {}
             }
         }
@@ -48,6 +51,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             key: key.ok_or(ParseError::MissingHeader('K'))?,
             time: time.ok_or(ParseError::MissingHeader('M'))?,
             default_length: default_length.ok_or(ParseError::MissingHeader('L'))?,
+            tempo,
         })
     }
 
@@ -93,6 +97,10 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         loop {
             match self.tokens.next() {
                 None => break,
+
+                Some(Token::Rest(r)) => {
+                    cur.push(BarElement::Rest(r));
+                }
 
                 Some(Token::Note(mut n)) => {
                     // Count consecutive broken rhythm arrows; stop if direction flips
@@ -267,6 +275,8 @@ fn parse_time_sig(s: &str) -> Option<TimeSignature> {
 }
 
 fn parse_key(s: &str) -> Option<Key> {
+    // Strip anything after whitespace (clef, transpose, etc. — not yet handled)
+    let s = s.split_whitespace().next().unwrap_or(s);
     let mut chars = s.chars();
     let pitch = match chars.next()? {
         'C' => Pitch::C, 'D' => Pitch::D, 'E' => Pitch::E, 'F' => Pitch::F,
@@ -276,11 +286,35 @@ fn parse_key(s: &str) -> Option<Key> {
     let mode = match chars.as_str().to_lowercase().as_str() {
         "" | "maj" | "major" => Mode::Major,
         "m" | "min" | "minor" => Mode::Minor,
-        "dor" | "dorian" => Mode::Dorian,
+        "ion" | "ionian"     => Mode::Ionian,
+        "aeo" | "aeolian"    => Mode::Aeolian,
+        "dor" | "dorian"     => Mode::Dorian,
+        "phr" | "phrygian"   => Mode::Phrygian,
+        "lyd" | "lydian"     => Mode::Lydian,
         "mix" | "mixolydian" => Mode::Mixolydian,
+        "loc" | "locrian"    => Mode::Locrian,
         _ => return None,
     };
     Some(Key { pitch, mode })
+}
+
+fn parse_tempo(s: &str) -> Option<Tempo> {
+    let s = s.trim();
+    // Strip optional trailing text like `"Andante"` or `"Allegro"`
+    let s = s.find('"').map(|i| s[..i].trim()).unwrap_or(s);
+    if s.is_empty() { return None; }
+
+    if let Some(eq_pos) = s.find('=') {
+        let beat_str = s[..eq_pos].trim();
+        let bpm_str  = s[eq_pos + 1..].trim();
+        let bpm: u16 = bpm_str.split_whitespace().next()?.parse().ok()?;
+        let beat = parse_fraction(beat_str)?;
+        Some(Tempo { bpm, beat_unit: Some(beat) })
+    } else {
+        // Plain BPM: `Q:120`
+        let bpm: u16 = s.split_whitespace().next()?.parse().ok()?;
+        Some(Tempo { bpm, beat_unit: None })
+    }
 }
 
 #[cfg(test)]
@@ -323,6 +357,83 @@ mod tests {
     fn parses_dorian_mode() {
         let tune = parse("M:4/4\nL:1/8\nK:Ddor").unwrap();
         assert!(matches!(tune.header.key.mode, Mode::Dorian));
+    }
+
+    #[test]
+    fn parses_phrygian_mode() {
+        let tune = parse("M:4/4\nL:1/8\nK:Ephr").unwrap();
+        assert!(matches!(tune.header.key.mode, Mode::Phrygian));
+    }
+
+    #[test]
+    fn parses_lydian_mode() {
+        let tune = parse("M:4/4\nL:1/8\nK:Flyd").unwrap();
+        assert!(matches!(tune.header.key.mode, Mode::Lydian));
+    }
+
+    #[test]
+    fn parses_locrian_mode() {
+        let tune = parse("M:4/4\nL:1/8\nK:Bloc").unwrap();
+        assert!(matches!(tune.header.key.mode, Mode::Locrian));
+    }
+
+    #[test]
+    fn parses_aeolian_as_minor() {
+        let tune = parse("M:4/4\nL:1/8\nK:Aaeo").unwrap();
+        assert!(matches!(tune.header.key.mode, Mode::Aeolian));
+    }
+
+    #[test]
+    fn parses_ionian_as_major() {
+        let tune = parse("M:4/4\nL:1/8\nK:Cion").unwrap();
+        assert!(matches!(tune.header.key.mode, Mode::Ionian));
+    }
+
+    #[test]
+    fn parses_tempo_plain_bpm() {
+        let tune = parse("M:4/4\nL:1/8\nK:C\nQ:120").unwrap();
+        let tempo = tune.header.tempo.unwrap();
+        assert_eq!(tempo.bpm, 120);
+        assert!(tempo.beat_unit.is_none());
+    }
+
+    #[test]
+    fn parses_tempo_with_beat_unit() {
+        let tune = parse("M:4/4\nL:1/8\nK:C\nQ:1/4=100").unwrap();
+        let tempo = tune.header.tempo.unwrap();
+        assert_eq!(tempo.bpm, 100);
+        let bu = tempo.beat_unit.unwrap();
+        assert_eq!(bu.numerator, 1);
+        assert_eq!(bu.denominator, 4);
+    }
+
+    #[test]
+    fn parses_tempo_with_quoted_text() {
+        let tune = parse("M:4/4\nL:1/8\nK:C\nQ:1/4=96 \"Andante\"").unwrap();
+        assert_eq!(tune.header.tempo.unwrap().bpm, 96);
+    }
+
+    #[test]
+    fn missing_tempo_is_none() {
+        let tune = parse("M:4/4\nL:1/8\nK:C").unwrap();
+        assert!(tune.header.tempo.is_none());
+    }
+
+    #[test]
+    fn parses_rest_in_body() {
+        let tune = parse("M:4/4\nL:1/8\nK:C\ncze").unwrap();
+        let bars = plain_bars(&tune);
+        assert_eq!(bars[0].elements.len(), 3);
+        assert!(matches!(&bars[0].elements[0], BarElement::Note(_)));
+        assert!(matches!(&bars[0].elements[1], BarElement::Rest(r) if !r.invisible));
+        assert!(matches!(&bars[0].elements[2], BarElement::Note(_)));
+    }
+
+    #[test]
+    fn parses_invisible_rest() {
+        let tune = parse("M:4/4\nL:1/8\nK:C\nx2").unwrap();
+        let bars = plain_bars(&tune);
+        assert!(matches!(&bars[0].elements[0], BarElement::Rest(r) if r.invisible && r.duration.numerator == 2));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::ast::{Token, Accidental, Ornament, Pitch, Note, Duration, Tuplet};
+use crate::ast::{Token, Accidental, Ornament, Pitch, Note, Duration, Rest, Tuplet};
 
 use std::str::Chars;
 use std::iter::Peekable;
@@ -55,6 +55,7 @@ impl<'a> Lexer<'a> {
             return match self.chars.peek()? {
                 'A'..='G' | 'a'..='g' => self.lex_note(),
                 '^' | '_' | '=' | '~' => self.lex_note(),
+                'z' | 'Z' | 'x' | 'X' => self.lex_rest(),
                 '>' => { self.chars.next(); Some(Token::BrokenRight) }
                 '<' => { self.chars.next(); Some(Token::BrokenLeft) }
                 '{' => self.lex_grace(),
@@ -109,8 +110,16 @@ impl<'a> Lexer<'a> {
             None
         };
         let accidental = match self.chars.peek() {
-            Some('^') => { self.chars.next(); Some(Accidental::Sharp) }
-            Some('_') => { self.chars.next(); Some(Accidental::Flat) }
+            Some('^') => {
+                self.chars.next();
+                if self.chars.peek() == Some(&'^') { self.chars.next(); Some(Accidental::DoubleSharp) }
+                else { Some(Accidental::Sharp) }
+            }
+            Some('_') => {
+                self.chars.next();
+                if self.chars.peek() == Some(&'_') { self.chars.next(); Some(Accidental::DoubleFlat) }
+                else { Some(Accidental::Flat) }
+            }
             Some('=') => { self.chars.next(); Some(Accidental::Natural) }
             _ => None,
         };
@@ -118,7 +127,21 @@ impl<'a> Lexer<'a> {
         self.lex_note_rest(pitch_char, accidental, ornament)
     }
 
+    fn lex_rest(&mut self) -> Option<Token> {
+        let ch = self.chars.next().unwrap();
+        let invisible = matches!(ch, 'x' | 'X');
+        let duration = self.lex_duration();
+        Some(Token::Rest(Rest { duration, invisible }))
+    }
+
     fn lex_note_rest(&mut self, pitch_char: char, accidental: Option<Accidental>, ornament: Option<Ornament>) -> Option<Token> {
+        // Rests arrive here when they start a line (e.g. `z4` or `Z` at column 0)
+        match pitch_char {
+            'z' | 'Z' => return Some(Token::Rest(Rest { duration: self.lex_duration(), invisible: false })),
+            'x' | 'X' => return Some(Token::Rest(Rest { duration: self.lex_duration(), invisible: true })),
+            _ => {}
+        }
+
         let (pitch, base_octave) = match pitch_char {
             'C' => (Pitch::C, -1),
             'D' => (Pitch::D, -1),
@@ -237,8 +260,16 @@ impl<'a> Lexer<'a> {
                 ' ' => { self.chars.next(); }
                 _ => {
                     let accidental = match self.chars.peek() {
-                        Some('^') => { self.chars.next(); Some(Accidental::Sharp) }
-                        Some('_') => { self.chars.next(); Some(Accidental::Flat) }
+                        Some('^') => {
+                            self.chars.next();
+                            if self.chars.peek() == Some(&'^') { self.chars.next(); Some(Accidental::DoubleSharp) }
+                            else { Some(Accidental::Sharp) }
+                        }
+                        Some('_') => {
+                            self.chars.next();
+                            if self.chars.peek() == Some(&'_') { self.chars.next(); Some(Accidental::DoubleFlat) }
+                            else { Some(Accidental::Flat) }
+                        }
                         Some('=') => { self.chars.next(); Some(Accidental::Natural) }
                         _ => None,
                     };
@@ -546,6 +577,63 @@ mod tests {
         let tokens = lex("g");
         let n = get_note(&tokens, 0);
         assert!(n.ornament.is_none());
+    }
+
+    // --- rests ---
+
+    #[test]
+    fn rest_z_default_duration() {
+        let tokens = lex("z");
+        assert!(matches!(&tokens[0], Token::Rest(r) if !r.invisible && r.duration.numerator == 1 && r.duration.denominator == 1));
+    }
+
+    #[test]
+    fn rest_z_with_length() {
+        let tokens = lex("z2");
+        assert!(matches!(&tokens[0], Token::Rest(r) if r.duration.numerator == 2));
+    }
+
+    #[test]
+    fn rest_x_invisible() {
+        let tokens = lex("x");
+        assert!(matches!(&tokens[0], Token::Rest(r) if r.invisible));
+    }
+
+    #[test]
+    fn rest_uppercase_z() {
+        let tokens = lex("Z4");
+        assert!(matches!(&tokens[0], Token::Rest(r) if !r.invisible && r.duration.numerator == 4));
+    }
+
+    #[test]
+    fn rest_uppercase_x_invisible() {
+        let tokens = lex("X");
+        assert!(matches!(&tokens[0], Token::Rest(r) if r.invisible));
+    }
+
+    #[test]
+    fn rest_in_line_of_notes() {
+        let tokens = lex("c z d");
+        assert!(matches!(&tokens[0], Token::Note(_)));
+        assert!(matches!(&tokens[1], Token::Rest(_)));
+        assert!(matches!(&tokens[2], Token::Note(_)));
+    }
+
+    // --- double accidentals ---
+
+    #[test]
+    fn double_sharp() {
+        let tokens = lex("^^c");
+        let n = get_note(&tokens, 0);
+        assert!(matches!(n.accidental, Some(Accidental::DoubleSharp)));
+        assert!(matches!(n.pitch, Pitch::C));
+    }
+
+    #[test]
+    fn double_flat() {
+        let tokens = lex("__b");
+        let n = get_note(&tokens, 0);
+        assert!(matches!(n.accidental, Some(Accidental::DoubleFlat)));
     }
 
     // --- regression: notes at line start ---

@@ -1,4 +1,4 @@
-use crate::ast::{Accidental, Bar, BarElement, Duration, Grace, Key, Mode, Note, Ornament, Pitch, Section, TimeSignature, Tune, Tuplet};
+use crate::ast::{Accidental, Bar, BarElement, Duration, Grace, Key, Mode, Note, Ornament, Pitch, Rest, Section, Tempo, TimeSignature, Tune, Tuplet};
 
 pub fn emit(tune: &Tune, style: Option<&str>) -> String {
     let mut out = String::new();
@@ -17,13 +17,16 @@ pub fn emit(tune: &Tune, style: Option<&str>) -> String {
         ));
     }
 
-    out.push_str("\\score {\n  \\new Staff {\n");
-    out.push_str(&format!("    {}\n", emit_key(&tune.header.key)));
-    out.push_str(&format!("    {}\n", emit_time(&tune.header.time)));
-
     let key_sig = KeySig::from_key(&tune.header.key);
     let dl = &tune.header.default_length;
     let time = &tune.header.time;
+
+    out.push_str("\\score {\n  \\new Staff {\n");
+    out.push_str(&format!("    {}\n", emit_key(&tune.header.key)));
+    out.push_str(&format!("    {}\n", emit_time(&tune.header.time)));
+    if let Some(tempo) = &tune.header.tempo {
+        out.push_str(&format!("    {}\n", emit_tempo(tempo, dl)));
+    }
 
     for (i, section) in tune.sections.iter().enumerate() {
         let next = tune.sections.get(i + 1);
@@ -84,11 +87,18 @@ impl KeySig {
     fn from_key(key: &Key) -> Self {
         let tonic = pitch_semitone(&key.pitch) as i32;
         // Offset to find the equivalent Ionian (major) tonic
+        // Semitone offset from modal tonic → equivalent Ionian (major) tonic.
+        // Ionian = 1st degree (0), Dorian = 2nd (+2 → offset 10), Phrygian = 3rd (+4 → 8),
+        // Lydian = 4th (+5 → 7), Mixolydian = 5th (+7 → 5), Aeolian = 6th (+9 → 3),
+        // Locrian = 7th (+11 → 1).
         let offset: i32 = match key.mode {
-            Mode::Major => 0,
-            Mode::Minor => 3,
-            Mode::Dorian => 10,
-            Mode::Mixolydian => 5,
+            Mode::Major | Mode::Ionian  => 0,
+            Mode::Minor | Mode::Aeolian => 3,
+            Mode::Dorian                => 10,
+            Mode::Phrygian              => 8,
+            Mode::Lydian                => 7,
+            Mode::Mixolydian            => 5,
+            Mode::Locrian               => 1,
         };
         let major_tonic = (tonic + offset).rem_euclid(12) as u8;
 
@@ -129,12 +139,27 @@ fn pitch_semitone(pitch: &Pitch) -> u8 {
 
 fn emit_key(key: &Key) -> String {
     let mode = match key.mode {
-        Mode::Major => "major",
-        Mode::Minor => "minor",
-        Mode::Dorian => "dorian",
-        Mode::Mixolydian => "mixolydian",
+        Mode::Major      | Mode::Ionian  => "major",
+        Mode::Minor      | Mode::Aeolian => "minor",
+        Mode::Dorian                     => "dorian",
+        Mode::Phrygian                   => "phrygian",
+        Mode::Lydian                     => "lydian",
+        Mode::Mixolydian                 => "mixolydian",
+        Mode::Locrian                    => "locrian",
     };
     format!("\\key {} \\{}", pitch_name(&key.pitch), mode)
+}
+
+fn emit_tempo(tempo: &Tempo, default_len: &Duration) -> String {
+    let beat = tempo.beat_unit.as_ref().unwrap_or(default_len);
+    let num = beat.numerator as u32;
+    let den = beat.denominator as u32;
+    let lily_dur = match (num, den) {
+        (1, d) => format!("{d}"),
+        (3, d) => format!("{}.", d / 2),
+        _      => format!("{}", den / num),
+    };
+    format!("\\tempo {lily_dur} = {}", tempo.bpm)
 }
 
 fn emit_time(time: &TimeSignature) -> String {
@@ -145,11 +170,18 @@ fn emit_bar(bar: &Bar, default_len: &Duration, key_sig: &KeySig) -> String {
     bar.elements
         .iter()
         .map(|el| match el {
-            BarElement::Note(n) => emit_note(n, default_len, key_sig),
+            BarElement::Note(n)          => emit_note(n, default_len, key_sig),
+            BarElement::Rest(r)          => emit_rest(r, default_len),
             BarElement::Tuplet(t, notes) => emit_tuplet(t, notes, default_len, key_sig),
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn emit_rest(rest: &Rest, default_len: &Duration) -> String {
+    // z/Z = audible rest (r), x/X = invisible spacer (s)
+    let prefix = if rest.invisible { "s" } else { "r" };
+    format!("{}{}", prefix, lily_duration(&rest.duration, default_len))
 }
 
 fn emit_grace(grace: &Grace, key_sig: &KeySig) -> String {
@@ -171,9 +203,11 @@ fn emit_note(note: &Note, default_len: &Duration, key_sig: &KeySig) -> String {
         .map(|g| emit_grace(g, key_sig))
         .unwrap_or_default();
     let acc_suffix = match &note.accidental {
-        Some(Accidental::Sharp)   => "is",
-        Some(Accidental::Flat)    => "es",
-        Some(Accidental::Natural) => "",    // plain pitch name = natural; LilyPond prints the sign
+        Some(Accidental::Sharp)       => "is",
+        Some(Accidental::DoubleSharp) => "isis",
+        Some(Accidental::Flat)        => "es",
+        Some(Accidental::DoubleFlat)  => "eses",
+        Some(Accidental::Natural)     => "", // plain pitch name = natural
         None => key_sig.acc_suffix(&note.pitch),
     };
     let ornament = match note.ornament {
@@ -247,6 +281,9 @@ fn bar_l_units(bar: &Bar) -> (u32, u32) {
         let (en, ed) = match elem {
             BarElement::Note(note) => {
                 (note.duration.numerator as u32, note.duration.denominator as u32)
+            }
+            BarElement::Rest(rest) => {
+                (rest.duration.numerator as u32, rest.duration.denominator as u32)
             }
             BarElement::Tuplet(t, notes) => {
                 let q = t.q.unwrap_or(default_q(t.p)) as u32;
@@ -339,6 +376,105 @@ mod tests {
     #[test]
     fn emits_key_dorian() {
         assert!(emit_str("M:4/4\nL:1/8\nK:Ddor").contains("\\key d \\dorian"));
+    }
+
+    #[test]
+    fn emits_key_phrygian() {
+        assert!(emit_str("M:4/4\nL:1/8\nK:Ephr").contains("\\key e \\phrygian"));
+    }
+
+    #[test]
+    fn emits_key_lydian() {
+        assert!(emit_str("M:4/4\nL:1/8\nK:Flyd").contains("\\key f \\lydian"));
+    }
+
+    #[test]
+    fn emits_key_locrian() {
+        assert!(emit_str("M:4/4\nL:1/8\nK:Bloc").contains("\\key b \\locrian"));
+    }
+
+    #[test]
+    fn emits_key_aeolian_as_minor() {
+        // Aeolian = natural minor; LilyPond uses \minor
+        assert!(emit_str("M:4/4\nL:1/8\nK:Aaeo").contains("\\key a \\minor"));
+    }
+
+    #[test]
+    fn emits_key_ionian_as_major() {
+        assert!(emit_str("M:4/4\nL:1/8\nK:Cion").contains("\\key c \\major"));
+    }
+
+    #[test]
+    fn phrygian_key_sig_correct() {
+        // E Phrygian = C major key sig (no sharps/flats)
+        let out = emit_str("M:4/4\nL:1/8\nK:Ephr\nf");
+        assert!(!out.contains("fis"), "E Phrygian should have no sharps: {out}");
+    }
+
+    #[test]
+    fn lydian_key_sig_correct() {
+        // F Lydian = C major key signature (0 sharps/flats).
+        // The raised 4th (B natural) distinguishes it from F major (which has Bb).
+        let out = emit_str("M:4/4\nL:1/8\nK:Flyd\nb");
+        assert!(!out.contains("bes"), "F Lydian B should be natural, not flat: {out}");
+        // And unlike plain F major, no flat key sig means f is also plain:
+        let out2 = emit_str("M:4/4\nL:1/8\nK:Flyd\nf");
+        assert!(!out2.contains("fis") && !out2.contains("fes"), "F Lydian f should be plain: {out2}");
+    }
+
+    #[test]
+    fn emits_tempo_plain_bpm() {
+        // Q:120 with L:1/4 → \tempo 4 = 120
+        let out = emit_str("M:4/4\nL:1/4\nK:C\nQ:120");
+        assert!(out.contains("\\tempo 4 = 120"), "expected tempo in: {out}");
+    }
+
+    #[test]
+    fn emits_tempo_with_beat_unit() {
+        let out = emit_str("M:4/4\nL:1/8\nK:C\nQ:1/4=96");
+        assert!(out.contains("\\tempo 4 = 96"), "expected tempo in: {out}");
+    }
+
+    #[test]
+    fn emits_dotted_tempo() {
+        let out = emit_str("M:6/8\nL:1/8\nK:G\nQ:3/8=120");
+        assert!(out.contains("\\tempo 4. = 120"), "expected dotted tempo in: {out}");
+    }
+
+    #[test]
+    fn no_tempo_when_q_absent() {
+        let out = emit_str("M:4/4\nL:1/8\nK:C\nc");
+        assert!(!out.contains("\\tempo"), "unexpected tempo in: {out}");
+    }
+
+    #[test]
+    fn emits_visible_rest() {
+        let out = emit_str("M:4/4\nL:1/8\nK:C\nz");
+        assert!(out.contains("r8"), "expected r8 in: {out}");
+    }
+
+    #[test]
+    fn emits_rest_with_length() {
+        let out = emit_str("M:4/4\nL:1/8\nK:C\nz4");
+        assert!(out.contains("r2"), "expected r2 (z4 × 1/8 = 1/2) in: {out}");
+    }
+
+    #[test]
+    fn emits_invisible_rest() {
+        let out = emit_str("M:4/4\nL:1/8\nK:C\nx");
+        assert!(out.contains("s8"), "expected s8 in: {out}");
+    }
+
+    #[test]
+    fn emits_double_sharp() {
+        let out = emit_str("M:4/4\nL:1/8\nK:C\n^^c");
+        assert!(out.contains("cisis"), "expected cisis in: {out}");
+    }
+
+    #[test]
+    fn emits_double_flat() {
+        let out = emit_str("M:4/4\nL:1/8\nK:C\n__b");
+        assert!(out.contains("beses"), "expected beses in: {out}");
     }
 
     #[test]

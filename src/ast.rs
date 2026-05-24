@@ -3,7 +3,9 @@
 #[derive(Debug, PartialEq, Clone)]
 pub enum Accidental {
     Sharp,
+    DoubleSharp,
     Flat,
+    DoubleFlat,
     Natural,
 }
 
@@ -39,6 +41,12 @@ pub struct Note {
     pub duration: Duration, // relative to L: default, so 1 = default, 2 = double
 }
 
+#[derive(Debug)]
+pub struct Rest {
+    pub duration: Duration,
+    pub invisible: bool, // z = false, x = true
+}
+
 // (p:q:r) — p notes in the time of q, affecting r notes. q and r are optional.
 #[derive(Debug)]
 pub struct Tuplet {
@@ -48,8 +56,15 @@ pub struct Tuplet {
 }
 
 #[derive(Debug)]
+pub struct Tempo {
+    pub bpm: u16,
+    pub beat_unit: Option<Duration>, // None = use L: (default note length)
+}
+
+#[derive(Debug)]
 pub enum Token {
     Note(Note),
+    Rest(Rest),
     Header(char, String),
     Tuplet(Tuplet),
     Grace(Vec<Note>, bool), // notes, acciaccatura
@@ -85,11 +100,13 @@ pub struct Header {
     pub key: Key,
     pub time: TimeSignature,
     pub default_length: Duration,
+    pub tempo: Option<Tempo>,
 }
 
 #[derive(Debug)]
 pub enum BarElement {
     Note(Note),
+    Rest(Rest),
     Tuplet(Tuplet, Vec<Note>),
 }
 
@@ -103,7 +120,12 @@ pub enum Mode {
     Major,
     Minor,
     Dorian,
+    Phrygian,
+    Lydian,
     Mixolydian,
+    Locrian,
+    Aeolian,
+    Ionian,
 }
 
 #[derive(Debug)]
